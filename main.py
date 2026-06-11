@@ -82,4 +82,4 @@ def _capture_with_cmd(cmd: list[str]) -> Image.Image:
 def _cmd_exists(cmd: str) -> bool:
     return subprocess.run(["which", cmd], capture_output=True).returncode == 0
 
-take_screenshot("mrbeast.png")
+_ = take_screenshot("mrbeast.png") # setting it to variable because it outputs stuff that we are ignoring for now
