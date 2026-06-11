@@ -9,7 +9,7 @@ SCREENSHOT_PATH = str(script_dir / "mrbeast.png")
 
 
 def on_screenshot(images: list[Image.Image], paths: list[str]) -> None:
-    # my code goes here
+    # continue off here
     pass
 
 
