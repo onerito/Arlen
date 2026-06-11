@@ -2,15 +2,11 @@ from pathlib import Path
 
 from PIL import Image
 
+from handler import on_screenshot
 from screenshot import take_screenshot
 
 script_dir = Path(__file__).parent
 SCREENSHOT_PATH = str(script_dir / "mrbeast.png")
-
-
-def on_screenshot(images: list[Image.Image], paths: list[str]) -> None:
-    # continue off here
-    pass
 
 
 def _indexed_path(index: int) -> str:
