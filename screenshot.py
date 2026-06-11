@@ -20,10 +20,55 @@ def take_screenshot(output_path: str | None = None) -> Image.Image:
     else:
         raise RuntimeError(f"Unsupported platform: {system}")
 
+    img = _crop_to_focused(img)
+
     if output_path:
         img.save(output_path)
 
     return img
+
+
+def _crop_to_focused(img: Image.Image) -> Image.Image:
+    """Crop a full (all-monitors) grab down to the focused monitor.
+
+    "Focused" = the monitor the mouse cursor is on, falling back to the
+    primary monitor. If monitor info isn't available, returns img unchanged.
+    """
+    try:
+        from screeninfo import get_monitors
+        monitors = get_monitors()
+    except Exception:
+        return img
+
+    if not monitors:
+        return img
+
+    target = None
+    try:
+        from pynput.mouse import Controller
+        cx, cy = Controller().position
+        target = next(
+            (m for m in monitors
+             if m.x <= cx < m.x + m.width and m.y <= cy < m.y + m.height),
+            None,
+        )
+    except Exception:
+        pass
+
+    if target is None:
+        target = next((m for m in monitors if m.is_primary), monitors[0])
+
+    # The full grab's (0, 0) is the top-left of the bounding box of all
+    # monitors, so offset each monitor's virtual coords by that corner.
+    left = min(m.x for m in monitors)
+    top = min(m.y for m in monitors)
+    box = (
+        target.x - left,
+        target.y - top,
+        target.x - left + target.width,
+        target.y - top + target.height,
+    )
+    return img.crop(box)
 
 
 def _screenshot_windows() -> Image.Image:
