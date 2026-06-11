@@ -58,4 +58,4 @@ def on_screenshot(_images: list[Image.Image], paths: list[str]) -> None:
             ],
             model=model,
         )
-        print(message.content)
+        print(message.content[0].text)

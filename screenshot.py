@@ -1,5 +1,7 @@
+import json
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -8,19 +10,22 @@ from PIL import Image
 
 
 def take_screenshot(output_path: str | None = None) -> Image.Image:
+    """Capture only the focused monitor (the one the cursor is on).
+
+    Each backend grabs a single monitor natively, so the result never spans
+    the whole virtual desktop (which can exceed API image size limits).
+    """
     system = platform.system()
 
     if system == "Windows":
-        img = _screenshot_windows()
+        img = _screenshot_mss()
     elif system == "Linux":
         if os.environ.get("WAYLAND_DISPLAY"):
             img = _screenshot_wayland()
         else:
-            img = _screenshot_x11()
+            img = _screenshot_mss()
     else:
         raise RuntimeError(f"Unsupported platform: {system}")
-
-    img = _crop_to_focused(img)
 
     if output_path:
         img.save(output_path)
@@ -28,77 +33,117 @@ def take_screenshot(output_path: str | None = None) -> Image.Image:
     return img
 
 
-def _crop_to_focused(img: Image.Image) -> Image.Image:
-    """Crop a full (all-monitors) grab down to the focused monitor.
+def _screenshot_mss() -> Image.Image:
+    """Windows / X11: enumerate monitors and grab just the focused one."""
+    import mss
 
-    "Focused" = the monitor the mouse cursor is on, falling back to the
-    primary monitor. If monitor info isn't available, returns img unchanged.
-    """
-    try:
-        from screeninfo import get_monitors
-        monitors = get_monitors()
-    except Exception:
-        return img
+    with mss.mss() as sct:
+        monitors = sct.monitors[1:]  # [0] is the full virtual desktop
+        if not monitors:
+            raise RuntimeError("No monitors detected")
 
-    if not monitors:
-        return img
+        target = None
+        try:
+            from pynput.mouse import Controller
 
-    target = None
-    try:
-        from pynput.mouse import Controller
-        cx, cy = Controller().position
-        target = next(
-            (m for m in monitors
-             if m.x <= cx < m.x + m.width and m.y <= cy < m.y + m.height),
-            None,
-        )
-    except Exception:
-        pass
+            cx, cy = Controller().position
+            target = next(
+                (
+                    m
+                    for m in monitors
+                    if m["left"] <= cx < m["left"] + m["width"]
+                    and m["top"] <= cy < m["top"] + m["height"]
+                ),
+                None,
+            )
+        except Exception:
+            pass
 
-    if target is None:
-        target = next((m for m in monitors if m.is_primary), monitors[0])
+        if target is None:
+            target = monitors[0]
 
-    # The full grab's (0, 0) is the top-left of the bounding box of all
-    # monitors, so offset each monitor's virtual coords by that corner.
-    left = min(m.x for m in monitors)
-    top = min(m.y for m in monitors)
-    box = (
-        target.x - left,
-        target.y - top,
-        target.x - left + target.width,
-        target.y - top + target.height,
-    )
-    return img.crop(box)
-
-
-def _screenshot_windows() -> Image.Image:
-    from PIL import ImageGrab
-    return ImageGrab.grab(all_screens=True)
-
-
-def _screenshot_x11() -> Image.Image:
-    try:
-        from PIL import ImageGrab
-        return ImageGrab.grab()
-    except Exception:
-        pass
-
-    return _capture_with_cmd(["scrot", "{tmp}"])
+        raw = sct.grab(target)
+        return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
 
 def _screenshot_wayland() -> Image.Image:
+    """Capture a single monitor on Wayland.
+
+    wlroots compositors (Sway, Hyprland, river, Wayfire, ...) use grim, with
+    the focused output resolved via compositor IPC where possible. KDE Plasma
+    (KWin) uses spectacle's current-monitor mode. As a last resort grim grabs
+    the whole desktop — which may exceed image size limits on multi-monitor
+    setups, so it is only used when nothing better is available.
+    """
     if _cmd_exists("grim"):
+        output = _focused_wayland_output()
+        if output:
+            return _capture_with_cmd(["grim", "-o", output, "{tmp}"])
+
+    # KDE Plasma: spectacle -m captures the monitor under the cursor.
+    if _cmd_exists("spectacle"):
+        return _capture_with_cmd(["spectacle", "-b", "-n", "-m", "-o", "{tmp}"])
+
+    if _cmd_exists("grim"):
+        # No way to identify a single output; grab everything as a fallback.
         return _capture_with_cmd(["grim", "{tmp}"])
 
-    if _cmd_exists("gnome-screenshot"):
-        return _capture_with_cmd(["gnome-screenshot", "--file={tmp}"])
-
-    if _cmd_exists("spectacle"):
-        return _capture_with_cmd(["spectacle", "-b", "-f", "-o", "{tmp}"])
-
     raise RuntimeError(
-        "No Wayland screenshot tool found. Install grim (wlroots/Sway), gnome-screenshot (GNOME), or spectacle (KDE)."
+        "No usable Wayland screenshot tool found. Install grim (wlroots: Sway, "
+        "Hyprland, river, Wayfire) or spectacle (KDE Plasma)."
     )
+
+
+def _focused_wayland_output() -> str | None:
+    """Return the name of the focused/active output for a wlroots compositor.
+
+    Tries compositor IPC that reports which output is focused (Hyprland, then
+    Sway), then falls back to wlr-randr (generic wlroots) which only lists
+    outputs — there we pick the first enabled one so grim still captures a
+    single monitor rather than the entire desktop. Returns None if no output
+    can be identified.
+    """
+    if _cmd_exists("hyprctl"):
+        try:
+            data = json.loads(_run(["hyprctl", "monitors", "-j"]))
+            for m in data:
+                if m.get("focused"):
+                    return m["name"]
+            if data:
+                return data[0]["name"]
+        except Exception:
+            pass
+
+    if _cmd_exists("swaymsg"):
+        try:
+            data = json.loads(_run(["swaymsg", "-t", "get_outputs"]))
+            for m in data:
+                if m.get("focused"):
+                    return m["name"]
+            active = [m for m in data if m.get("active")]
+            if active:
+                return active[0]["name"]
+        except Exception:
+            pass
+
+    if _cmd_exists("wlr-randr"):
+        try:
+            data = json.loads(_run(["wlr-randr", "--json"]))
+            for o in data:
+                if o.get("enabled", True):
+                    return o["name"]
+            if data:
+                return data[0]["name"]
+        except Exception:
+            pass
+
+    return None
+
+
+def _run(cmd: list[str]) -> str:
+    return subprocess.run(
+        cmd, capture_output=True, text=True, check=True
+    ).stdout
 
 
 def _capture_with_cmd(cmd: list[str]) -> Image.Image:
@@ -115,4 +160,4 @@ def _capture_with_cmd(cmd: list[str]) -> Image.Image:
 
 
 def _cmd_exists(cmd: str) -> bool:
-    return subprocess.run(["which", cmd], capture_output=True).returncode == 0
+    return shutil.which(cmd) is not None

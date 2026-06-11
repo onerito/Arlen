@@ -1,4 +1,6 @@
+anthropic
+python-dotenv
 Pillow
 pynput
-screeninfo
+mss
 evdev; sys_platform == "linux"
