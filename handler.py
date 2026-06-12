@@ -1,7 +1,7 @@
 from PIL import Image
 from dotenv import load_dotenv
 import os
-from anthropic import Anthropic
+from anthropic import Anthropic, DefaultHttpxClient
 from typing import cast
 from anthropic.types import ModelParam
 import base64
@@ -23,7 +23,15 @@ model = cast(ModelParam, raw_model)
 
 max_long_edge = int(os.getenv("MAX_IMAGE_LONG_EDGE", "1568"))
 
-client = Anthropic(api_key=api_key) # sets the big juicy
+proxy_url = os.getenv("PROXY")
+
+# route all api traffic through a proxy when PROXY is set, otherwise hand the
+# SDK its default client so timeouts/connection limits stay intact. supports
+# http(s) and socks5 (e.g. socks5://127.0.0.1:9050); socks needs httpx[socks].
+if proxy_url:
+    client = Anthropic(api_key=api_key, http_client=DefaultHttpxClient(proxy=proxy_url))
+else:
+    client = Anthropic(api_key=api_key) # sets the big juicy
 
 def image_block(path: str):
     # image tokens are billed on pixel dimensions (w*h/750), not file size,
