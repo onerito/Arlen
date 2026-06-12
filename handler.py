@@ -7,14 +7,17 @@ from anthropic.types import ModelParam
 import base64
 import io
 
+from indicators import flash_caps_lock, flash_corner_indicator
+
 _ = load_dotenv()
 
 api_key = os.getenv("ANTHROPIC_API_KEY")
 raw_model = os.getenv("MODEL")
 prompt = os.getenv("PROMPT")
+delivery_mode = os.getenv("DELIVERY_MODE")
 
-if not api_key or not raw_model or not prompt:
-    raise RuntimeError("ANTHROPIC_API_KEY/MODEL/PROMPT is missing, check your env file")
+if not api_key or not raw_model or not prompt or not delivery_mode:
+    raise RuntimeError("ANTHROPIC_API_KEY/MODEL/PROMPT/DELIVERY_MODE is missing, check your env file")
 
 model = cast(ModelParam, raw_model)
 
@@ -57,6 +60,7 @@ def on_screenshot(_images: list[Image.Image], paths: list[str]) -> None:
     for path in paths:
         content.append(image_block(path)) # this makes it into base64 and then appends it to the content list, which we will give to claude
 
+    # one prompt after all the images, not one per image (per-image repeated the whole prompt and burned tokens)
     content.append(
         {
             "type": "text",
@@ -76,5 +80,26 @@ def on_screenshot(_images: list[Image.Image], paths: list[str]) -> None:
     )
     for block in message.content:
         if block.type == "text":
-            print(block.text)
-    print(message.usage)
+            print(f'Raw text: "{block.text}"')
+            answer = block.text.strip()  # claude often tacks on a trailing newline; bare "A" must still match
+            if answer == "A":
+                if delivery_mode == "caps":
+                    flash_caps_lock(1)
+                elif delivery_mode == "pixel":
+                    flash_corner_indicator(1)
+            elif answer == "B":
+                if delivery_mode == "caps":
+                    flash_caps_lock(2)
+                elif delivery_mode == "pixel":
+                    flash_corner_indicator(2)
+            elif answer == "C":
+                if delivery_mode == "caps":
+                    flash_caps_lock(3)
+                elif delivery_mode == "pixel":
+                    flash_corner_indicator(3)
+            elif answer == "D":
+                if delivery_mode == "caps":
+                    flash_caps_lock(4)
+                elif delivery_mode == "pixel":
+                    flash_corner_indicator(4)
+    

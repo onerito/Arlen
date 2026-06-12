@@ -47,7 +47,12 @@ def _listen_evdev() -> None:
     _KEY_DOWN = 1
 
     device_paths: list[str] = evdev.list_devices()  # pyright: ignore[reportUnknownMemberType]
-    devices: list[evdev.InputDevice[str]] = [evdev.InputDevice(p) for p in device_paths]
+    devices: list[evdev.InputDevice[str]] = []
+    for p in device_paths:
+        try:
+            devices.append(evdev.InputDevice(p))
+        except OSError:
+            continue  # no permission or device vanished; skip it instead of crashing the whole listener
     keyboards: list[evdev.InputDevice[str]] = [d for d in devices if ecodes.EV_KEY in d.capabilities()]
 
     if not keyboards:
