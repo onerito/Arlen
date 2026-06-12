@@ -5,7 +5,7 @@ from anthropic import Anthropic
 from typing import cast
 from anthropic.types import ModelParam
 import base64
-from pathlib import Path
+import io
 
 _ = load_dotenv()
 
@@ -18,10 +18,25 @@ if not api_key or not raw_model or not prompt:
 
 model = cast(ModelParam, raw_model)
 
+max_long_edge = int(os.getenv("MAX_IMAGE_LONG_EDGE", "1568"))
+
 client = Anthropic(api_key=api_key) # sets the big juicy
 
 def image_block(path: str):
-    data = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
+    # image tokens are billed on pixel dimensions (w*h/750), not file size,
+    # so downscaling is what actually saves money. png stays lossless so
+    # small text doesnt turn into jpeg mush.
+    img = Image.open(path)
+    if max(img.size) > max_long_edge:
+        scale = max_long_edge / max(img.size)
+        img = img.resize(
+            (round(img.width * scale), round(img.height * scale)),
+            Image.Resampling.LANCZOS,
+        )
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    data = base64.b64encode(buf.getvalue()).decode("utf-8")
 
     return {
         "type": "image",
@@ -42,20 +57,24 @@ def on_screenshot(_images: list[Image.Image], paths: list[str]) -> None:
     for path in paths:
         content.append(image_block(path)) # this makes it into base64 and then appends it to the content list, which we will give to claude
 
-        content.append(
+    content.append(
+        {
+            "type": "text",
+            "text": prompt,
+        }
+    )
+    message = client.messages.create(
+        max_tokens=8000, # thinking counts against this cap, so it needs headroom or you get cut off mid-think with no answer
+        thinking={"type": "adaptive"}, # reasons privately so the visible reply stays answers-only
+        messages=[
             {
-                "type": "text",
-                "text": prompt,
+                "role": "user",
+                "content": content,
             }
-        )
-        message = client.messages.create(
-            max_tokens=1024, # i didnt add this to the .env file since this is good
-            messages=[
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
-            model=model,
-        )
-        print(message.content[0].text)
+        ],
+        model=model,
+    )
+    for block in message.content:
+        if block.type == "text":
+            print(block.text)
+    print(message.usage)
